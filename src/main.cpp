@@ -197,11 +197,11 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
   
-////   strat in lane 1;
-//  int lane = 1;
-//
-////   have a reference velocity to target;
-//  double ref_vel = 49.5;
+//   strat in lane 1;
+  int lane = 1;
+
+//   have a reference velocity to target;
+  double ref_vel = 0.4;
 
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
@@ -238,14 +238,14 @@ int main() {
             double end_path_d = j[1]["end_path_d"];
             
             //strat in lane 1;
-            int lane = 1;
-            
-            //have a reference velocity to target;
-            double ref_vel = 49.5;
+//            int lane = 1;
+//
+//            //have a reference velocity to target;
+////            double ref_vel = 49.5;
+//            double ref_vel = 0.0;
 
           	//Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
-        
             
             int prev_size = previous_path_x.size();
             
@@ -269,13 +269,21 @@ int main() {
                     
                     check_car_s += ((double)prev_size*.02*check_speed);
                     
-                    if(check_car_s>car_s && (check_car_s-car_s)<30)
+                    if(check_car_s>car_s && ((check_car_s-car_s)<30))
                     {
                         ref_vel = 29.5;
                     }
                 }
             }
             
+            if(too_close)
+            {
+                ref_vel -= .224;
+            }
+            else if(ref_vel < 49.5)
+            {
+                ref_vel += .224;
+            }
             
             //Create a list of widely spaced (x, y), evenly spaced at 30m;
             //Later we will interpolate these waypoints with a spline and fill it in with more points that controls the trajectory.
@@ -358,7 +366,6 @@ int main() {
                 next_y_vals.push_back(previous_path_y[i]);
             }
             
-            
             //Calculate how to break up spline points so that we travel at our desired reference velocity.
             double target_x = 30.0;
             double target_y = s(target_x);
@@ -387,7 +394,6 @@ int main() {
                 
                 next_x_vals.push_back(x_point);
                 next_y_vals.push_back(y_point);
-                
             }
             
           	//TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
