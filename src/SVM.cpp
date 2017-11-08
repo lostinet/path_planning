@@ -4,8 +4,8 @@
 #include "SVM.h"
 
 
-StateMachine::State
-StateMachine::evaluate_next_state(StateMachine::State cur_state, int target_lane, int cur_lane, bool all_collision,double vel)
+SVM::State
+SVM::evaluate_next_state(SVM::State cur_state, int target_lane, int cur_lane, bool all_collision, double vel)
 {
 
   // keep lane as a initial state
@@ -13,7 +13,7 @@ StateMachine::evaluate_next_state(StateMachine::State cur_state, int target_lane
 
 
   switch (cur_state) {
-    // Keep Lane have 3 possible transitions: Keep lane, Prep Lane Change Left, Prep Lane Change Right
+    // “Keep Lane have 3 possible transitions: Keep lane, Prep Lane Change Left, Prep Lane Change Right
     case KL:
       if (target_lane == cur_lane) state = KL;
       else if (target_lane < cur_lane) state = PLCL;

@@ -3,7 +3,7 @@
 #ifndef PATH_PLANNING_STATEMACHINE_H
 #define PATH_PLANNING_STATEMACHINE_H
 
-class StateMachine {
+class SVM {
 
 public:
   enum State { KL, LCL, PLCL, PLCR, LCR };
