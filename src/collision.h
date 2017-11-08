@@ -10,7 +10,7 @@ class collision {
 public:
   bool iscollision(int lane, vector<double> car_state);
 
-  // bool all_lane_collision = false;
+  bool all_lane_collision = false;
   // int path_size = 50;
   // double end_path_s;
 

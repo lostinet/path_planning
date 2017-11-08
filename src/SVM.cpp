@@ -20,7 +20,7 @@ StateMachine::evaluate_next_state(StateMachine::State cur_state, int target_lane
       else if (target_lane > cur_lane) state = PLCR;
       break;
 
-    // Prep Lane Change Left have 2 possible transitions: staty PLCL, LCL.
+    // Prep Lane Change Left have 2 possible transitions: staty PLCL, LCL. change more than 1 lane will not be considered.
     case PLCL:
       if ((target_lane < cur_lane)) {
         if (all_collision || vel > 35.5) state = PLCL;
@@ -33,7 +33,7 @@ StateMachine::evaluate_next_state(StateMachine::State cur_state, int target_lane
       state = KL;
       break;
 
-    // Prep Lane Change Left have 2 possible transitions: staty PLCR, LCR.
+    // Prep Lane Change Left have 2 possible transitions: staty PLCR, LCR. change more than 1 lane will not be considered.
     case PLCR:
       if ((target_lane > cur_lane)) {
         if (all_collision || vel > 35.5) state = PLCR;
@@ -50,7 +50,6 @@ StateMachine::evaluate_next_state(StateMachine::State cur_state, int target_lane
     default:
       state = cur_state;
       break;
-
 
   }
   return state;

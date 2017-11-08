@@ -9,11 +9,20 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
+#include "behavior.h"
+#include "collision.h"
+#include "SVM.h"
+
 
 using namespace std;
 
 // for convenience
 using json = nlohmann::json;
+
+collision colider;
+StateMachine::State state;
+StateMachine stateMachine;
+
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -160,6 +169,55 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 }
 
+int next_lane(vector<double> car_state)
+{
+  int cur_lane = car_state[6];
+  int lane = cur_lane;
+
+  // cout << "current_lane " << cur_lane << endl;
+  bool collision = colider.iscollision(cur_lane, car_state);
+  // cout << "collision in lane " << lane << " " << collision << endl;
+  if (collision)
+  {
+    lane = 0;
+    while (lane < 3 && collision)
+    {
+      if (lane != cur_lane)
+      {
+        collision = colider.iscollision(lane, car_state);
+        // cout << "collision in lane " << lane << " " << collision << endl;
+        if (!collision) break;
+      }
+      lane++;
+    }
+  }
+  // If we couldnt find any lane where there is no collision then set all_collision to true so that speed is reduced
+  // and keep driving in current lane
+  // Also we dont want to change more than 1 lane at a time
+  if (collision || abs(lane - cur_lane) > 1 )
+  {
+    colider.all_lane_collision = true;
+    lane = cur_lane;
+  }
+  return lane;
+}
+
+vector<vector<double>> behavior::pathplan(vector<double> car_state,
+                                           vector<double> previous_path_x, vector<double> previous_path_y,
+                                           double end_path_s)
+{
+
+    if (state != StateMachine::State::PLCL && state != StateMachine::State::PLCR)
+    {
+      target_lane = next_lane(car_state);
+    }
+    StateMachine::State next_state = stateMachine.evaluate_next_state(state, target_lane, lane, colider.all_lane_collision, car_state[5]);
+
+    state = next_state;
+}
+
+
+
 int main() {
   uWS::Hub h;
 
@@ -196,14 +254,14 @@ int main() {
   	map_waypoints_dx.push_back(d_x);
   	map_waypoints_dy.push_back(d_y);
   }
-//
-// //   strat in lane 1;
+  //   strat in lane 1;
   int lane = 1;
-//
-// //   have a reference velocity to target;
+
+  //  have a reference velocity to target;
   double ref_vel = 0.4;
 
-  h.onMessage([&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+
+  h.onMessage([&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -238,57 +296,62 @@ int main() {
             double end_path_d = j[1]["end_path_d"];
             auto sensor_fusion = j[1]["sensor_fusion"];
 
-            // strat in lane 1;
-          //  int lane = 1;
-
-          //  have a reference velocity to target;
-          //  double ref_vel = 49.5;
-          //  double ref_vel = 0.0;
-
-          	//Sensor Fusion Data, a list of all other cars on the same side of the road.
-
-
             int prev_size = previous_path_x.size();
+            int target_lane;
+
+            // car_d/4 indicate the current lane.
+            vector<double> car_state = {car_x,car_y,car_s,car_d,car_yaw,car_speed,car_d/4};
 
             json msgJson;
 
-            if(prev_size>0)
+
+            int cur_lane = car_state[6];
+
+            if(prev_size>0){car_s = end_path_s;}
+
+            // bool too_close = false;
+
+
+
+            //if all lane change options were blocked but lane keeping strategy is not applied >> reduce speed.
+            if ((colider.all_lane_collision || state != StateMachine::State::KL) && velocity > 1.0)
             {
-                car_s = end_path_s;
+              ref_vel -= 0.224;
+            } //if its less than speed limit and lane keeping strategy is applied >> increase speed.
+            else if (velocity < 49.5 && state == StateMachine::State::KL)
+            {
+              ref_vel += 0.224;
             }
 
-            bool too_close = false;
+            // //find ref_v to use
+            // for(int i=0;i<sensor_fusion.size();i++)
+            // {
+            //     float check_car_d = sensor_fusion[i][6];
+            //     if(check_car_d<(2+4*cur_lane+2) && check_car_d>(2+4*cur_lane-2)) //cur_lane --> target_lane.
+            //     {
+            //         double vx = sensor_fusion[i][3];
+            //         double vy = sensor_fusion[i][4];
+            //         double check_speed = sqrt(vx*vx + vy*vy);
+            //         double check_car_s = sensor_fusion[i][5];
+            //
+            //         check_car_s += ((double)prev_size*0.02*check_speed);
+            //
+            //         if(check_car_s>car_s && ((check_car_s-car_s)<30))
+            //         {
+            //             too_close = true;
+            //         }
+            //     }
+            //
+            // }
 
-            //find ref_v to use
-            for(int i=0;i<sensor_fusion.size();i++)
-            {
-                float d = sensor_fusion[i][6];
-                if(d<(2+4*lane+2) && d>(2+4*lane-2))
-                {
-                    double vx = sensor_fusion[i][3];
-                    double vy = sensor_fusion[i][4];
-                    double check_speed = sqrt(vx*vx + vy*vy);
-                    double check_car_s = sensor_fusion[i][5];
-
-                    check_car_s += ((double)prev_size*0.02*check_speed);
-
-                    if(check_car_s>car_s && ((check_car_s-car_s)<30))
-                    {
-                        too_close = true;
-
-                    }
-
-                }
-            }
-
-            if(too_close)
-            {
-                ref_vel -= 0.224;
-            }
-            else if(ref_vel < 49.5)
-            {
-                ref_vel += 0.224;
-            }
+            // if(too_close)
+            // {
+            //     ref_vel -= 0.224;
+            // }
+            // else if(ref_vel < 49.5)
+            // {
+            //     ref_vel += 0.224;
+            // }
 
             //Create a list of widely spaced (x, y), evenly spaced at 30m;
             //Later we will interpolate these waypoints with a spline and fill it in with more points that controls the trajectory.
@@ -334,9 +397,9 @@ int main() {
             }
 
             //In Frenet add evenly 30m spaced points ahead of the starting reference.
-            vector<double> next_wp0 = getXY(car_s + 30,(2+4 * lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            vector<double> next_wp1 = getXY(car_s + 60,(2+4 * lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            vector<double> next_wp2 = getXY(car_s + 90,(2+4 * lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp0 = getXY(car_s + 30,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp1 = getXY(car_s + 60,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp2 = getXY(car_s + 90,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
             ptsx.push_back(next_wp0[0]);
             ptsx.push_back(next_wp1[0]);
