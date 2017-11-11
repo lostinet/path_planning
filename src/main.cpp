@@ -9,20 +9,12 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
-#include "collision.h"
-#include "SVM.h"
-#include "TrajectoryGenerator.h"
 
 
 using namespace std;
 
 // for convenience
 using json = nlohmann::json;
-
-collision colider;
-SVM::State state;
-SVM svm;
-TrajectoryGenerator Tjgr;
 
 
 // For converting back and forth between radians and degrees.
@@ -170,70 +162,18 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 }
 
-int next_lane(vector<double> car_state)
-{
-  int cur_lane = car_state[6];
-  int lane = cur_lane;
-
-  // cout << "current_lane " << cur_lane << endl;
-  bool collision = colider.iscollision(cur_lane, car_state);
-  // cout << "collision in lane " << lane << " " << collision << endl;
-  if (collision)
-  {
-    lane = 0;
-    while (lane < 3 && collision)
-    {
-      if (lane != cur_lane)
-      {
-        collision = colider.iscollision(lane, car_state);
-        // cout << "collision in lane " << lane << " " << collision << endl;
-        if (!collision) break;
-      }
-      lane++;
+bool oneLaneChange(int cur_lane, int target_lane) {
+    if (cur_lane == 0 && target_lane == 1) {
+        return true;
     }
-  }
-  // If we couldnt find any lane where there is no collision then set all_collision to true so that speed is reduced
-  // and keep driving in current lane
-  // Also we dont want to change more than 1 lane at a time
-  if (collision || abs(lane - cur_lane) > 1 )
-  {
-    colider.all_lane_collision = true;
-    lane = cur_lane;
-  }
-  return lane;
-}
-
-vector<vector<double>> pathplan(vector<double> car_state,
-                                           vector<double> previous_path_x, vector<double> previous_path_y,
-                                           double end_path_s)
-{
-    // target lane is defined for the non PLCL and non PLCR state.
-    // if (state != SVM::State::PLCL && state!= SVM::State::PLCR)
-    // {
-    //   int target_lane = next_lane(car_state);
-    // }
-    int target_lane = next_lane(car_state);
-
-    int cur_lane = car_state[6];
-    double ref_vel=0;
-
-    SVM::State next_state = svm.evaluate_next_state(state, target_lane, cur_lane, colider.all_lane_collision, car_state[5]);
-
-    state = next_state;
-
-    if ((colider.all_lane_collision || state!= SVM::State::KL) && ref_vel > 1.0)
-    {
-      ref_vel -= 0.224;
-    } //if its less than speed limit and lane keeping strategy is applied >> increase speed.
-    else if (ref_vel < 49.5 && state == SVM::State::KL)
-    {
-      ref_vel += 0.224;
+    if (cur_lane == 1 && (target_lane == 0 || target_lane == 2)) {
+        return true;
     }
-
-    vector<vector<double>> trajectory = Tjgr.generateTrajectories(car_state, previous_path_x, previous_path_y, target_lane, ref_vel);
-    return trajectory;
+    if (cur_lane == 2 && target_lane == 1) {
+        return true;
+    }
+    return false;
 }
-
 
 
 int main() {
@@ -273,13 +213,15 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
   //   strat in lane 1;
-  int lane = 1;
+  int cur_lane = 1;
 
   //  have a reference velocity to target;
+  double ref_vel = 0.0;
+
+  long num_units_in_current_lane = 0;
 
 
-
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&ref_vel, &cur_lane, &num_units_in_current_lane, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -315,141 +257,177 @@ int main() {
             auto sensor_fusion = j[1]["sensor_fusion"];
 
             int prev_size = previous_path_x.size();
-            int target_lane;
+            if(prev_size>0){car_s = end_path_s;}
 
-            // car_d/4 indicate the current lane.
-            vector<double> car_state = {car_x,car_y,car_s,car_d,car_yaw,car_speed,car_d/4};
+            // int cur_lane = car_d/4;
+            // cout << "current lane is " << cur_lane << endl;
 
-            vector<vector<double>> path = pathplan(car_state, previous_path_x, previous_path_y, end_path_s);
+            bool too_close = false;
+            vector<bool> laneFlag = {true,true,true};
+            laneFlag[cur_lane] = false;
+            num_units_in_current_lane += 1;
+
+
+            for(int i=0;i<sensor_fusion.size();i++){
+              float d = sensor_fusion[i][6];
+              // if(d<(2+4*cur_lane+2) && d>(2+4*cur_lane-2))
+              double vx = sensor_fusion[i][3];
+              double vy = sensor_fusion[i][4];
+              double check_speed = sqrt(vx*vx + vy*vy);
+              double check_car_s = sensor_fusion[i][5];
+              int check_car_lane = d/4;
+
+              check_car_s += (double)prev_size*.02*check_speed;
+
+              if((check_car_lane == cur_lane) && (check_car_s-car_s)>0.0 && (check_car_s-car_s)<30.0){
+                too_close = true;
+              }
+              // if there is a car in front of me at some lane. block the lane change action towards that lane.
+              if((check_car_lane != cur_lane) && (check_car_s-car_s)>3.0 && (check_car_s-car_s)<30.0){
+                laneFlag[check_car_lane] = false;
+              // if my car runs faster in front of its adjacent car by > 3m (more than 1/2 of my car length), than lane
+            }else if((check_car_lane != cur_lane) && (check_car_s-car_s)<3.0 && (car_s-check_car_s)< 10.0) {
+                laneFlag[check_car_lane] = false;
+              }
+              // if((check_car_lane == cur_lane) && (car_s-check_car_s)<20.0){
+                // too_slow = true;
+              // }
+              // cout << "laneflag: " << laneFlag[0] << laneFlag[1] << laneFlag[2] << endl;
+              // cout << "too close? " << too_close << endl;
+            }
+
+
+            if(too_close)
+            {
+              ref_vel -= .224;
+              for (int i = 0; i < 3; i++) {
+                if (laneFlag[i] && oneLaneChange(cur_lane, i) && (num_units_in_current_lane > 10)) {
+                  // cout << "laneFlag: " << laneFlag[0] << laneFlag[1] << laneFlag[3] << endl;
+                  // cout << "Lane " << i << " is clear" << endl;
+                  cur_lane = i;
+                  num_units_in_current_lane = 0;
+                }
+              }
+            }
+            else if(ref_vel < 49.5)
+            {
+              ref_vel += .224;
+            }
+
 
             json msgJson;
 
             vector<double> next_x_vals;
             vector<double> next_y_vals;
 
+            vector<double> ptsx;
+            vector<double> ptsy;
 
-            // if(prev_size>0){car_s = end_path_s;}
-            // bool too_close = false;
-            for (auto& xy_cordinate : path)
+            //reference x, y, yaw status;
+            //either we will reference the shorting points as where the car is or at the previous paths end points.
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+
+            //if previous size is almost empty, use the car as starting reference.
+            if(prev_size<2)
             {
-                //cout << xy_cordinate[0] << endl;
-                next_x_vals.push_back(xy_cordinate[0]);
-                next_y_vals.push_back(xy_cordinate[1]);
+                //use 2 points that make the path tangent to the car
+                double prev_car_x = car_x - cos(car_yaw);
+                double prev_car_y = car_y - sin(car_yaw);
+
+                ptsx.push_back(prev_car_x);
+                ptsx.push_back(car_x);
+
+                ptsy.push_back(prev_car_y);
+                ptsy.push_back(car_y);
+            }else
+            //use the previous path's end point as starting reference
+            {
+                //redefine reference state as previous path end point
+                ref_x = previous_path_x[prev_size-1];
+                ref_y = previous_path_y[prev_size-1];
+
+                double ref_x_prev = previous_path_x[prev_size-2];
+                double ref_y_prev = previous_path_y[prev_size-2];
+                ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
+
+                //use 2 points that make the path tangent to the previous path's end point.
+                ptsx.push_back(ref_x_prev);
+                ptsx.push_back(ref_x);
+
+                ptsy.push_back(ref_y_prev);
+                ptsy.push_back(ref_y);
             }
 
+            //In Frenet add evenly 30m spaced points ahead of the starting reference.
+            vector<double> next_wp0 = getXY(car_s + 30,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp1 = getXY(car_s + 60,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            vector<double> next_wp2 = getXY(car_s + 90,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
-            //if all lane change options were blocked but lane keeping strategy is not applied >> reduce speed.
+            ptsx.push_back(next_wp0[0]);
+            ptsx.push_back(next_wp1[0]);
+            ptsx.push_back(next_wp2[0]);
 
+            ptsy.push_back(next_wp0[1]);
+            ptsy.push_back(next_wp1[1]);
+            ptsy.push_back(next_wp2[1]);
 
+            for(int i=0; i<ptsx.size(); i++)
+            {
+                double shift_x = ptsx[i] - ref_x;
+                double shift_y = ptsy[i] - ref_y;
 
-            // vector<double> ptsx;
-            // vector<double> ptsy;
-            //
-            // //reference x, y, yaw status;
-            // //either we will reference the shorting points as where the car is or at the previous paths end points.
-            // double ref_x = car_x;
-            // double ref_y = car_y;
-            // double ref_yaw = deg2rad(car_yaw);
-            //
-            // //if previous size is almost empty, use the car as starting reference.
-            // if(prev_size<2)
-            // {
-            //     //use 2 points that make the path tangent to the car
-            //     double prev_car_x = car_x - cos(car_yaw);
-            //     double prev_car_y = car_y - sin(car_yaw);
-            //
-            //     ptsx.push_back(prev_car_x);
-            //     ptsx.push_back(car_x);
-            //
-            //     ptsy.push_back(prev_car_y);
-            //     ptsy.push_back(car_y);
-            // }else
-            // //use the previous path's end point as starting reference
-            // {
-            //     //redefine reference state as previous path end point
-            //     ref_x = previous_path_x[prev_size-1];
-            //     ref_y = previous_path_y[prev_size-1];
-            //
-            //     double ref_x_prev = previous_path_x[prev_size-2];
-            //     double ref_y_prev = previous_path_y[prev_size-2];
-            //     ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
-            //
-            //     //use 2 points that make the path tangent to the previous path's end point.
-            //     ptsx.push_back(ref_x_prev);
-            //     ptsx.push_back(ref_x);
-            //
-            //     ptsy.push_back(ref_y_prev);
-            //     ptsy.push_back(ref_y);
-            // }
-            //
-            // //In Frenet add evenly 30m spaced points ahead of the starting reference.
-            // vector<double> next_wp0 = getXY(car_s + 30,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            // vector<double> next_wp1 = getXY(car_s + 60,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            // vector<double> next_wp2 = getXY(car_s + 90,(2+4 * cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            //
-            // ptsx.push_back(next_wp0[0]);
-            // ptsx.push_back(next_wp1[0]);
-            // ptsx.push_back(next_wp2[0]);
-            //
-            // ptsy.push_back(next_wp0[1]);
-            // ptsy.push_back(next_wp1[1]);
-            // ptsy.push_back(next_wp2[1]);
-            //
-            // for(int i=0; i<ptsx.size(); i++)
-            // {
-            //     double shift_x = ptsx[i] - ref_x;
-            //     double shift_y = ptsy[i] - ref_y;
-            //
-            //     ptsx[i] = (shift_x*cos(0-ref_yaw) - shift_y*sin(0-ref_yaw));
-            //     ptsy[i] = (shift_x*sin(0-ref_yaw) + shift_y*cos(0-ref_yaw));
-            // }
-            //
-            // //Create a spline
-            // tk::spline s;
-            // // set (x,y) points to the spline.
-            // s.set_points(ptsx,ptsy);
-            //
-            // //Define the actual (x,y) points we will use for planner
+                ptsx[i] = (shift_x*cos(0-ref_yaw) - shift_y*sin(0-ref_yaw));
+                ptsy[i] = (shift_x*sin(0-ref_yaw) + shift_y*cos(0-ref_yaw));
+            }
+
+            //Create a spline
+            tk::spline s;
+            // set (x,y) points to the spline.
+            s.set_points(ptsx,ptsy);
+
+            //Define the actual (x,y) points we will use for planner
 
 
-            //start with all of the previous path points from last time
-            // for(int i=0; i < previous_path_x.size(); i++)
-            // {
-            //     next_x_vals.push_back(previous_path_x[i]);
-            //     next_y_vals.push_back(previous_path_y[i]);
-            // }
-            //
-            // //Calculate how to break up spline points so that we travel at our desired reference velocity.
-            // double target_x = 30.0;
-            // double target_y = s(target_x);
-            // double target_dist = sqrt((target_x)*(target_x)+(target_y)*(target_y));
-            //
-            // double x_add_on = 0;
-            //
-            // //Fill up the rest of our path planner after filling it with previous points. we will always output 50 points.
-            // for(int i=1;i<= 50 - previous_path_x.size();i++)
-            // {
-            //     double N = (target_dist/(0.02*ref_vel/2.24));
-            //     double x_point = x_add_on + (target_x)/N;
-            //     double y_point = s(x_point);
-            //
-            //     x_add_on = x_point;
-            //
-            //     double x_ref = x_point;
-            //     double y_ref = y_point;
-            //
-            //     //rotate back to normal to global coordinates
-            //     x_point = (x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw));
-            //     y_point = (x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw));
-            //
-            //     x_point += ref_x;
-            //     y_point += ref_y;
-            //
-            //     next_x_vals.push_back(x_point);
-            //     next_y_vals.push_back(y_point);
-            // }
+            // start with all of the previous path points from last time
+            for(int i=0; i < previous_path_x.size(); i++)
+            {
+                next_x_vals.push_back(previous_path_x[i]);
+                next_y_vals.push_back(previous_path_y[i]);
+            }
 
-          	//TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+            //Calculate how to break up spline points so that we travel at our desired reference velocity.
+            double target_x = 30.0;
+            double target_y = s(target_x);
+            double target_dist = sqrt((target_x)*(target_x)+(target_y)*(target_y));
+
+            double x_add_on = 0;
+
+            //Fill up the rest of our path planner after filling it with previous points. we will always output 50 points.
+            for(int i=1;i<= 50 - previous_path_x.size();i++)
+            {
+                double N = (target_dist/(0.02*ref_vel/2.24));
+                double x_point = x_add_on + (target_x)/N;
+                double y_point = s(x_point);
+
+                x_add_on = x_point;
+
+                double x_ref = x_point;
+                double y_ref = y_point;
+
+                //rotate back to normal to global coordinates
+                x_point = (x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw));
+                y_point = (x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw));
+
+                x_point += ref_x;
+                y_point += ref_y;
+
+                next_x_vals.push_back(x_point);
+                next_y_vals.push_back(y_point);
+            }
+
+          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
 
           	msgJson["next_x"] = next_x_vals;
