@@ -162,6 +162,7 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 }
 
+// double lane manoeuvre is prohibited, a restricted lane changing strategy is defined.(only adjacent lane allowed) so maximum jerk is under control
 bool oneLaneChange(int cur_lane, int target_lane) {
     if (cur_lane == 0 && target_lane == 1) {
         return true;
@@ -267,10 +268,9 @@ int main() {
             laneFlag[cur_lane] = false;
             num_units_in_current_lane += 1;
 
-
+            // get motion data of other cars
             for(int i=0;i<sensor_fusion.size();i++){
               float d = sensor_fusion[i][6];
-              // if(d<(2+4*cur_lane+2) && d>(2+4*cur_lane-2))
               double vx = sensor_fusion[i][3];
               double vy = sensor_fusion[i][4];
               double check_speed = sqrt(vx*vx + vy*vy);
@@ -278,25 +278,18 @@ int main() {
               int check_car_lane = d/4;
 
               check_car_s += (double)prev_size*.02*check_speed;
-
+              // foresee a car driving in front of me, actions will be defined if distance limit is violated.
               if((check_car_lane == cur_lane) && (check_car_s-car_s)>0.0 && (check_car_s-car_s)<30.0){
                 too_close = true;
               }
-              // if there is a car in front of me at some lane. block the lane change action towards that lane.
-              if((check_car_lane != cur_lane) && (check_car_s-car_s)>3.0 && (check_car_s-car_s)<30.0){
-                laneFlag[check_car_lane] = false;
-              // if my car runs faster in front of its adjacent car by > 3m (more than 1/2 of my car length), than lane
-            }else if((check_car_lane != cur_lane) && (check_car_s-car_s)<3.0 && (car_s-check_car_s)< 10.0) {
+
+              // if car exists in range (-10m,30m) at adjacent lane, lane change action will be blocked.
+              if((check_car_lane != cur_lane) && (car_s-check_car_s)<10.0 && (check_car_s-car_s)<30.0){
                 laneFlag[check_car_lane] = false;
               }
-              // if((check_car_lane == cur_lane) && (car_s-check_car_s)<20.0){
-                // too_slow = true;
-              // }
-              // cout << "laneflag: " << laneFlag[0] << laneFlag[1] << laneFlag[2] << endl;
-              // cout << "too close? " << too_close << endl;
             }
 
-
+            // too close to frontal car,slow down and consider lane changing if applicable.
             if(too_close)
             {
               ref_vel -= .224;
@@ -309,6 +302,7 @@ int main() {
                 }
               }
             }
+            // actively anchor to target speed.
             else if(ref_vel < 49.5)
             {
               ref_vel += .224;
